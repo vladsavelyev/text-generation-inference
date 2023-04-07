@@ -26,4 +26,4 @@ install: gen-server install-torch install-transformers
 	pip install -e . --no-cache-dir
 
 run-dev:
-	SAFETENSORS_FAST_GPU=1 python text_generation/cli.py serve taufeeque/tiny-gpt2
+	SAFETENSORS_FAST_GPU=1 python text_generation/cli.py serve distilgpt2
