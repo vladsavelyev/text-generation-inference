@@ -203,32 +203,27 @@ async fn generate_stream(
             err
         }).expect("Validation error!");
 
-    let intermediate_rx = state.batcher.infer_stream(
+    let mut intermediate_rx = state.batcher.infer_stream(
         input_length,
         validated_request,
     );
     
-    // Create a stream by unfolding the receiver.
-    let result_stream = unfold(intermediate_rx, |mut rx| async move {
-        let intermediate_response = match rx.recv().await {
-            Some(res) => res,
-            None => return None, // The sender has been dropped, stop the stream.
-        }.unwrap();
-
-        // Wrap the token in an SSE event.
-        let event = Event::default().data(intermediate_response.token);
-
-        // If the response is finished, return None to stop the stream, otherwise pass the
-        // receiver for the next iteration.
-        if intermediate_response.is_finished {
-            None
-        } else {
-            Some((Ok(event), rx))
+    let stream = async_stream::stream! {
+        while let Some(item) = intermediate_rx.recv().await {
+            sleep(Duration::from_millis(500)).await;
+            
+            let response = item.expect("Inference error!");
+            if response.is_finished {
+                // If the response is finished, return None to stop the stream,
+                break
+            }
+            let event = Event::default().data(response.token);
+            yield Ok(event)
         }
-    });
-    
+    };
+
     // Create an SSE response with a keep-alive.
-    Sse::new(result_stream).keep_alive(KeepAlive::default())
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 
