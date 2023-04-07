@@ -85,6 +85,11 @@ pub(crate) struct GeneratedText {
 }
 
 #[derive(Serialize)]
+pub(crate) struct Intermediate {
+    pub token: String,
+}
+
+#[derive(Serialize, Debug)]
 pub(crate) struct ErrorResponse {
-    pub error: String,
+    pub error: String
 }

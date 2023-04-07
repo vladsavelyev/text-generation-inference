@@ -6,9 +6,9 @@ use axum::Json;
 use nohash_hasher::IntMap;
 use std::future::Future;
 use std::sync::Arc;
-use text_generation_client::{Batch, ClientError, GeneratedText, ShardedClient};
+use text_generation_client::{Batch, ClientError, GeneratedText, ShardedClient, Intermediate};
 use thiserror::Error;
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::{oneshot, mpsc, Notify};
 use tokio::time::Instant;
 use tracing::instrument;
 
@@ -50,6 +50,30 @@ impl Batcher {
 
         Self { db, shared }
     }
+    
+    pub(crate) fn infer_stream(
+        &self,
+        input_length: usize,
+        request: GenerateRequest
+    ) -> mpsc::UnboundedReceiver<Result<IntermediateResponse, ClientError>> {
+        let (intermediate_tx, intermediate_rx) = mpsc::unbounded_channel();
+    
+        // Try to append the request to the database
+        self.db.append(Entry {
+            request: request,
+            response_tx: None,
+            intermediate_tx: Some(intermediate_tx),
+            input_length,
+            time: Instant::now(),
+            batch_time: None,
+        });
+    
+        // Notify the background task that we have a new entry in the database that needs
+        // to be batched
+        self.shared.batching_task.notify_one();
+        
+        intermediate_rx
+    }
 
     /// Add a new request to the database and return a future that will generate the text
     pub(crate) async fn infer(
@@ -63,7 +87,8 @@ impl Batcher {
         // Try to append the request to the database
         self.db.append(Entry {
             request,
-            response_tx,
+            response_tx: Some(response_tx),
+            intermediate_tx: None,
             input_length,
             time: Instant::now(),
             batch_time: None,
@@ -72,7 +97,7 @@ impl Batcher {
         // Notify the background task that we have a new entry in the database that needs
         // to be batched
         self.shared.batching_task.notify_one();
-
+        
         // Await on the response from the background task
         // We can safely unwrap as the background task will never drop the sender
         response_rx
@@ -152,12 +177,12 @@ async fn batching_task(
 
 /// Wrap a future inside a match statement to handle errors and send the response to the Batcher
 async fn wrap_future(
-    future: impl Future<Output = Result<(Vec<GeneratedText>, Option<Batch>), ClientError>>,
+    future: impl Future<Output = Result<(Vec<GeneratedText>, Option<Batch>, Vec<Intermediate>), ClientError>>,
     entries: &mut IntMap<u64, Entry>,
 ) -> Option<Batch> {
     match future.await {
-        Ok((generated_texts, next_batch)) => {
-            send_generated(generated_texts, entries);
+        Ok((generated_texts, next_batch, intermediates)) => {
+            send_generated(generated_texts, entries, intermediates);
             next_batch
         }
         // If we have an error, we discard the whole batch
@@ -172,32 +197,59 @@ async fn wrap_future(
 fn send_error(error: ClientError, entries: &mut IntMap<u64, Entry>) {
     entries.drain().for_each(|(_, entry)| {
         // unwrap_or is valid here as we don't care if the receiver is gone.
-        entry.response_tx.send(Err(error.clone())).unwrap_or(());
+        if let Some(response_tx) = entry.response_tx {
+            response_tx.send(Err(error.clone())).unwrap_or(());
+        }
     });
 }
 
 /// Send `generated_text` to the Batcher for all `finished`
-fn send_generated(finished: Vec<GeneratedText>, entries: &mut IntMap<u64, Entry>) {
+fn send_generated(finished: Vec<GeneratedText>, entries: &mut IntMap<u64, Entry>, intermediates: Vec<Intermediate>) {
+    intermediates.into_iter().for_each(|intermediate| {
+        // We can `expect` here as the request id should always be in the entries
+        let entry = entries
+            .get(&intermediate.request_id)
+            .expect("ID not found in entries. This is a bug.");
+        
+        if let Some(intermediate_tx) = &entry.intermediate_tx {
+            let response = IntermediateResponse {
+                token: intermediate.token,
+                is_finished: false,
+            };
+            intermediate_tx.send(Ok(response)).unwrap_or(());
+        }
+    });
+    
     finished.into_iter().for_each(|output| {
         // We can `expect` here as the request id should always be in the entries
         let entry = entries
             .remove(&output.request.unwrap().id)
             .expect("ID not found in entries. This is a bug.");
-
-        let response = InferResponse {
-            output_text: output.output_text,
-            generated_tokens: output.generated_tokens,
-            token_ids: output.token_ids,
-            tokens: output.tokens,
-            logprobs: output.logprobs,
-            finish_reason: output.finish_reason,
-            seed: output.seed,
-            queued: entry.time,
-            start: entry.batch_time.unwrap(), // unwrap is always valid
-            end: Instant::now(),
-        };
-        // unwrap_or is valid here as we don't care if the receiver is gone.
-        entry.response_tx.send(Ok(response)).unwrap_or(());
+        
+        if let Some(intermediate_tx) = &entry.intermediate_tx {
+            let intermediate_response = IntermediateResponse {
+                token: String::from(""),
+                is_finished: true,
+            };
+            intermediate_tx.send(Ok(intermediate_response)).unwrap_or(());
+        }
+    
+        if let Some(response_tx) = entry.response_tx {
+            let response = InferResponse {
+                output_text: output.output_text,
+                generated_tokens: output.generated_tokens,
+                token_ids: output.token_ids,
+                tokens: output.tokens,
+                logprobs: output.logprobs,
+                finish_reason: output.finish_reason,
+                seed: output.seed,
+                queued: entry.time,
+                start: entry.batch_time.unwrap(), // unwrap is always valid
+                end: Instant::now(),
+            };
+            // unwrap_or is valid here as we don't care if the receiver is gone.
+            response_tx.send(Ok(response)).unwrap_or(());
+        }
     });
 }
 
@@ -213,6 +265,12 @@ pub(crate) struct InferResponse {
     pub(crate) queued: Instant,
     pub(crate) start: Instant,
     pub(crate) end: Instant,
+}
+
+#[derive(Debug)]
+pub(crate) struct IntermediateResponse {
+    pub(crate) token: String,
+    pub(crate) is_finished: bool,
 }
 
 #[derive(Debug, Error)]

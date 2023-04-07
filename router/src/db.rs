@@ -3,6 +3,7 @@ use crate::InferResponse;
 use crate::{GenerateParameters, GenerateRequest};
 use nohash_hasher::{BuildNoHashHasher, IntMap};
 use parking_lot::Mutex;
+use tokio::sync::mpsc::UnboundedSender;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use text_generation_client::{
@@ -10,6 +11,7 @@ use text_generation_client::{
 };
 use tokio::sync::oneshot::Sender;
 use tokio::time::Instant;
+use crate::batcher::IntermediateResponse;
 
 /// Database entry
 #[derive(Debug)]
@@ -17,7 +19,8 @@ pub(crate) struct Entry {
     /// Request
     pub request: GenerateRequest,
     /// Response sender to communicate between the Batcher and the batching_task
-    pub response_tx: Sender<Result<InferResponse, ClientError>>,
+    pub response_tx: Option<Sender<Result<InferResponse, ClientError>>>,
+    pub intermediate_tx: Option<UnboundedSender<Result<IntermediateResponse, ClientError>>>,
     /// Number of tokens in the input
     pub input_length: usize,
     /// Instant when this entry was created

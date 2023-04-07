@@ -1,18 +1,23 @@
+use std::convert::Infallible;
 use crate::{
-    Batcher, Details, ErrorResponse, GenerateParameters, GenerateRequest, GeneratedText, Validation,
+    Batcher, Details, ErrorResponse, GenerateParameters, GenerateRequest, GeneratedText, Validation
 };
 use axum::extract::Extension;
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Result, Sse};
+use axum::response::sse::{Event, KeepAlive};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use text_generation_client::ShardedClient;
+use std::time::Duration;
+use futures::stream::unfold;
+use text_generation_client::{ShardedClient};
 use tokenizers::Tokenizer;
 use tokio::signal;
-use tokio::sync::Semaphore;
-use tokio::time::Instant;
+use tokio::sync::{Semaphore};
+use tokio::time::{Instant, sleep};
+use tokio_stream::{Stream};
 use tracing::instrument;
 
 // Server shared state
@@ -176,6 +181,57 @@ async fn generate(
     Ok((headers, Json(response)))
 }
 
+async fn generate_stream(
+    state: Extension<ServerState>,
+    req: Json<GenerateRequest>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    // Limit concurrent requests by acquiring a permit from the semaphore
+    let _permit = state.limit_concurrent_requests.try_acquire().map_err(|_| {
+        tracing::error!("Model is overloaded");
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: "Model is overloaded".to_string(),
+            }),
+        )
+    }).expect("Model is overloaded!");
+
+    // Validate request
+    let (input_length, validated_request) =
+        state.validation.validate(req.0).await.map_err(|err| {
+            tracing::error!("{}", err.to_string());
+            err
+        }).expect("Validation error!");
+
+    let intermediate_rx = state.batcher.infer_stream(
+        input_length,
+        validated_request,
+    );
+    
+    // Create a stream by unfolding the receiver.
+    let result_stream = unfold(intermediate_rx, |mut rx| async move {
+        let intermediate_response = match rx.recv().await {
+            Some(res) => res,
+            None => return None, // The sender has been dropped, stop the stream.
+        }.unwrap();
+
+        // Wrap the token in an SSE event.
+        let event = Event::default().data(intermediate_response.token);
+
+        // If the response is finished, return None to stop the stream, otherwise pass the
+        // receiver for the next iteration.
+        if intermediate_response.is_finished {
+            None
+        } else {
+            Some((Ok(event), rx))
+        }
+    });
+    
+    // Create an SSE response with a keep-alive.
+    Sse::new(result_stream).keep_alive(KeepAlive::default())
+}
+
+
 /// Serving method
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -201,6 +257,7 @@ pub async fn run(
     let app = Router::new()
         .route("/", post(generate))
         .route("/generate", post(generate))
+        .route("/generate_stream", post(generate_stream))
         .route("/", get(health))
         .route("/health", get(health))
         .layer(Extension(shared_state.clone()));

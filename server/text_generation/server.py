@@ -32,10 +32,13 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
             request.batch, self.model.tokenizer, self.model.device
         )
 
-        generated_texts, next_batch = self.model.generate_token(batch)
+        intermediates, generated_texts, next_batch = self.model.generate_token(batch)
         self.cache.set(next_batch)
 
         return generate_pb2.GenerateResponse(
+            intermediates=[
+                intermediate.to_pb() for intermediate in intermediates
+            ],
             generated_texts=[
                 generated_text.to_pb() for generated_text in generated_texts
             ],
@@ -58,10 +61,13 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
         else:
             batch = batches[0]
 
-        generated_texts, next_batch = self.model.generate_token(batch)
+        intermediates, generated_texts, next_batch = self.model.generate_token(batch)
         self.cache.set(next_batch)
 
         return generate_pb2.GenerateWithCacheResponse(
+            intermediates=[
+                intermediate.to_pb() for intermediate in intermediates
+            ],
             generated_texts=[
                 generated_text.to_pb() for generated_text in generated_texts
             ],

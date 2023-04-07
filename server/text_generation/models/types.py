@@ -52,3 +52,12 @@ class GeneratedText:
             finish_reason=self.reason,
             seed=self.seed,
         )
+
+
+@dataclass
+class Intermediate:
+    token: str
+    request_id: int
+    
+    def to_pb(self) -> generate_pb2.Intermediate:
+        return generate_pb2.Intermediate(token=self.token, request_id=self.request_id)

@@ -88,6 +88,11 @@ message GeneratedText {
     optional uint64 seed = 8;
 }
 
+message Intermediate {
+    string token = 1;
+    uint64 request_id = 2;
+}
+
 message GenerateRequest {
     /// Batch
     Batch batch = 1;
@@ -98,6 +103,8 @@ message GenerateResponse {
     repeated GeneratedText generated_texts = 1;
     /// Next batch (cached)
     optional Batch batch = 2;
+    /// Finished requests
+    repeated Intermediate intermediates = 3;
 }
 
 message GenerateWithCacheRequest {
@@ -110,4 +117,6 @@ message GenerateWithCacheResponse {
     repeated GeneratedText generated_texts = 1;
     /// Next batch (cached)
     optional Batch batch = 2;
+    /// Finished requests
+    repeated Intermediate intermediates = 3;
 }

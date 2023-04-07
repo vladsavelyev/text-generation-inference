@@ -26,4 +26,4 @@ install: gen-server install-torch install-transformers
 	pip install -e . --no-cache-dir
 
 run-dev:
-	SAFETENSORS_FAST_GPU=1 python -m torch.distributed.run --nproc_per_node=2 text_generation/cli.py serve bigscience/bloom-560m --sharded
+	SAFETENSORS_FAST_GPU=1 python text_generation/cli.py serve taufeeque/tiny-gpt2

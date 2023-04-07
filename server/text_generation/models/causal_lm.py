@@ -5,7 +5,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenize
 from typing import Optional, Tuple, List, Type
 
 from text_generation.models import Model
-from text_generation.models.types import GeneratedText, Batch
+from text_generation.models.types import GeneratedText, Batch, Intermediate
 from text_generation.pb import generate_pb2
 from text_generation.utils import NextTokenChooser, StoppingCriteria, Sampling
 
@@ -289,7 +289,7 @@ class CausalLM(Model):
 
     def generate_token(
         self, batch: CausalLMBatch
-    ) -> Tuple[List[GeneratedText], Optional[CausalLMBatch]]:
+    ) -> Tuple[List[Intermediate], List[GeneratedText], Optional[CausalLMBatch]]:
         # For some reason, inference_mode does not work well with GLOO which we use on CPU
         context_manager = (
             torch.no_grad if self.device.type == "cpu" else torch.inference_mode
@@ -317,6 +317,7 @@ class CausalLM(Model):
 
         # Finished requests
         generated_texts: List[GeneratedText] = []
+        intermediates: List[Intermediate] = []
 
         # Zipped iterator
         iterator = zip(
@@ -342,7 +343,7 @@ class CausalLM(Model):
             # Select next token
             tokens, logprobs = next_token_chooser(all_input_ids, logits)
             next_token = tokens[-1].view(1, 1)
-
+            
             # Append next token to all tokens
             all_input_ids = torch.cat([all_input_ids, next_token])
             new_input_length = input_length + 1
@@ -355,12 +356,19 @@ class CausalLM(Model):
                 next_token_logprob = logprobs[-1, next_token]
                 all_logprobs = torch.cat([all_logprobs, next_token_logprob])
 
+            next_token_sq = next_token.squeeze()
+            next_token_decoded = self.tokenizer.decode(
+                next_token_sq, clean_up_tokenization_spaces=False
+            )
+            intermediates.append(Intermediate(
+                next_token_decoded,
+                request_id=request.id,
+            ))
+
             # Evaluate stopping criteria
             stop, reason = stopping_criteria(
-                next_token.squeeze(),
-                self.tokenizer.decode(
-                    next_token.squeeze(), clean_up_tokenization_spaces=False
-                ),
+                next_token_sq,
+                next_token_decoded,
             )
             if stop:
                 # Decode generated tokens
@@ -409,7 +417,7 @@ class CausalLM(Model):
 
         # We finished all generations in the batch; there is no next batch
         if not next_batch_keep_indices:
-            return generated_texts, None
+            return intermediates, generated_texts, None
 
         next_batch_input_ids = torch.cat(next_batch_input_ids, dim=0)
         # If we finished at least one generation, we need to evict the indices of the generations that finished
@@ -469,4 +477,4 @@ class CausalLM(Model):
             max_sequence_length=next_batch_max_sequence_length,
             keys_head_dim_last=batch.keys_head_dim_last,
         )
-        return generated_texts, next_batch
+        return intermediates, generated_texts, next_batch
