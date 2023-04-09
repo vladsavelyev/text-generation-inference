@@ -1,17 +1,17 @@
 /// This code is massively inspired by Tokio mini-redis
-use crate::InferResponse;
+use crate::infer::InferError;
+use crate::infer::InferStreamResponse;
 use crate::{GenerateParameters, GenerateRequest};
 use nohash_hasher::{BuildNoHashHasher, IntMap};
 use parking_lot::Mutex;
-use tokio::sync::mpsc::UnboundedSender;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use text_generation_client::{
-    Batch, ClientError, NextTokenChooserParameters, Request, StoppingCriteriaParameters,
+    Batch, NextTokenChooserParameters, Request, StoppingCriteriaParameters,
 };
-use tokio::sync::oneshot::Sender;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::time::Instant;
-use crate::batcher::IntermediateResponse;
 
 /// Database entry
 #[derive(Debug)]
@@ -19,14 +19,15 @@ pub(crate) struct Entry {
     /// Request
     pub request: GenerateRequest,
     /// Response sender to communicate between the Batcher and the batching_task
-    pub response_tx: Option<Sender<Result<InferResponse, ClientError>>>,
-    pub intermediate_tx: Option<UnboundedSender<Result<IntermediateResponse, ClientError>>>,
+    pub response_tx: UnboundedSender<Result<InferStreamResponse, InferError>>,
     /// Number of tokens in the input
     pub input_length: usize,
     /// Instant when this entry was created
     pub time: Instant,
     /// Instant when this entry was added to a batch
     pub batch_time: Option<Instant>,
+    /// Permit
+    pub _permit: OwnedSemaphorePermit,
 }
 
 /// Request Database

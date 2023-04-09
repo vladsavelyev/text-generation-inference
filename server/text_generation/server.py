@@ -27,25 +27,20 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
         self.cache.clear()
         return generate_pb2.ClearCacheResponse()
 
-    async def Generate(self, request, context):
+    async def Prefill(self, request, context):
         batch = self.model.batch_type.from_pb(
             request.batch, self.model.tokenizer, self.model.device
         )
 
-        intermediates, generated_texts, next_batch = self.model.generate_token(batch)
+        generations, next_batch = self.model.generate_token(batch)
         self.cache.set(next_batch)
 
-        return generate_pb2.GenerateResponse(
-            intermediates=[
-                intermediate.to_pb() for intermediate in intermediates
-            ],
-            generated_texts=[
-                generated_text.to_pb() for generated_text in generated_texts
-            ],
+        return generate_pb2.PrefillResponse(
+            generations=[generation.to_pb() for generation in generations],
             batch=next_batch.to_pb() if next_batch else None,
         )
 
-    async def GenerateWithCache(self, request, context):
+    async def Decode(self, request, context):
         if len(request.batches) == 0:
             raise ValueError("Must provide at least one batch")
 
@@ -61,16 +56,11 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
         else:
             batch = batches[0]
 
-        intermediates, generated_texts, next_batch = self.model.generate_token(batch)
+        generations, next_batch = self.model.generate_token(batch)
         self.cache.set(next_batch)
 
-        return generate_pb2.GenerateWithCacheResponse(
-            intermediates=[
-                intermediate.to_pb() for intermediate in intermediates
-            ],
-            generated_texts=[
-                generated_text.to_pb() for generated_text in generated_texts
-            ],
+        return generate_pb2.DecodeResponse(
+            generations=[generation.to_pb() for generation in generations],
             batch=next_batch.to_pb() if next_batch else None,
         )
 

@@ -1,10 +1,10 @@
 /// Text Generation Inference Webserver
-mod batcher;
+mod infer;
 mod db;
 pub mod server;
 mod validation;
 
-use batcher::{Batcher, InferResponse};
+use infer::Infer;
 use db::{Db, Entry};
 use serde::{Deserialize, Serialize};
 use validation::Validation;
@@ -69,24 +69,32 @@ pub(crate) struct GenerateRequest {
     pub parameters: GenerateParameters,
 }
 
+#[derive(Debug, Serialize)]
+pub struct Token(u32, String, f32);
+
 #[derive(Serialize)]
 pub(crate) struct Details {
     pub finish_reason: String,
     pub generated_tokens: u32,
     pub seed: Option<u64>,
-    pub tokens: Vec<(u32, String, f32)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill: Option<Vec<Token>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<Vec<Token>>,
 }
 
 #[derive(Serialize)]
-pub(crate) struct GeneratedText {
+pub(crate) struct GenerateResponse {
     pub generated_text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Details>,
 }
 
 #[derive(Serialize)]
-pub(crate) struct Intermediate {
-    pub token: String,
+pub(crate) struct StreamResponse {
+    pub token: Token,
+    pub generated_text: Option<String>,
+    pub details: Option<Details>,
 }
 
 #[derive(Serialize, Debug)]
